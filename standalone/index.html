@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hybrid Work Task Management System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css"></head>
+<body>
+<section id="login">
+ <i class="orb o1"></i><i class="orb o2"></i>
+ <div class="gcard">
+  <div class="avatar" id="lav"></div>
+  <h2>Welcome back</h2><p>Log in to manage your hybrid work tasks.</p>
+  <div class="seg" style="margin:20px 0 26px"><button class="on" id="r-e" onclick="setRole('employee')">Employee</button><button id="r-s" onclick="setRole('supervisor')">Supervisor</button></div>
+  <label class="ul"><span id="im"></span><input id="em" type="text" placeholder="Email or username" autocomplete="username"></label>
+  <label class="ul"><span id="il"></span><input type="password" placeholder="Password" autocomplete="current-password"></label>
+  <div class="row sb"><label class="chk"><input type="checkbox" checked>Remember me</label><button class="btn lnk" onclick="toast('Password reset link sent')">Forgot password?</button></div>
+  <button class="btn p gobtn" onclick="login()">Login</button>
+  <p class="sm" style="text-align:center;margin:16px 0 0;color:#e4dcff">No account yet? <button class="btn lnk" style="display:inline;color:#fff;text-decoration:underline" onclick="toast('Sign-up form opens here')">Create an account</button></p>
+ </div>
+</section>
+
+<div id="app">
+ <aside><div class="logo"><span class="mark" id="lg2"></span><span class="lt">Hybrid Work Tasks</span></div><nav class="nav" id="nav"></nav>
+  <div class="me"><span class="av" id="av"></span><div><div id="mn" style="font-weight:600;color:#fff"></div><div class="sm" id="mr"></div></div></div></aside>
+ <div><div class="top"><b id="crumb" style="font-family:'Bricolage Grotesque'"></b>
+  <div class="row"><button aria-label="Notifications" onclick="go('notif')" id="bell"></button><button aria-label="Profile" onclick="go('profile')" id="pf"></button><button aria-label="Log out" onclick="logout()" id="lo"></button></div></div>
+  <main id="view"></main></div>
+ <nav id="bn"></nav>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="app.js"></script>
+</body></html>
