@@ -3,10 +3,18 @@
 
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import Icon from '@/components/Icon';
 import { useApp } from '@/components/Providers';
 import { Banner, Fld, useNav } from '@/components/ui';
 import { createClient } from '@/lib/supabase';
+
+const BUCKET = 'task-attachments';
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
+
+const ALLOWED_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'application/pdf',
+];
 
 export default function Accomplish() {
   const { toast } = useApp();
@@ -17,6 +25,7 @@ export default function Accomplish() {
   const [tasks, setTasks] = useState([]);
   const [taskId, setTaskId] = useState('');
   const [accomplishment, setAccomplishment] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -40,8 +49,6 @@ export default function Accomplish() {
         return;
       }
 
-      console.log('Logged-in employee ID:', user.id);
-
       const { data, error: fetchError } = await supabase
         .from('tasks')
         .select('id, title, status')
@@ -51,7 +58,6 @@ export default function Accomplish() {
       if (!active) return;
 
       if (fetchError) {
-        console.error('Load tasks error:', fetchError);
         setError(fetchError.message);
       } else {
         const availableTasks = data || [];
@@ -80,6 +86,31 @@ export default function Accomplish() {
     };
   }, [selectedTaskId]);
 
+  function handleFileChange(e) {
+    const file = e.target.files?.[0];
+
+    if (!file) {
+      setSelectedFile(null);
+      return;
+    }
+
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      alert('Only JPG, PNG, and PDF files are allowed.');
+      e.target.value = '';
+      setSelectedFile(null);
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE) {
+      alert('File size must not exceed 5 MB.');
+      e.target.value = '';
+      setSelectedFile(null);
+      return;
+    }
+
+    setSelectedFile(file);
+  }
+
   async function submitAccomplishment(e) {
     e.preventDefault();
 
@@ -100,6 +131,86 @@ export default function Accomplish() {
     try {
       const supabase = createClient();
 
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (authError || !user) {
+        throw new Error('Please log in again.');
+      }
+
+      // Verify that the task belongs to this employee.
+      const { data: assignedTask, error: taskError } =
+        await supabase
+          .from('tasks')
+          .select('id')
+          .eq('id', taskId)
+          .eq('assigned_to', user.id)
+          .single();
+
+      if (taskError || !assignedTask) {
+        throw new Error(
+          'This task is not assigned to your account.'
+        );
+      }
+
+      // STEP 1: Upload attachment and save its record.
+      if (selectedFile) {
+        const extension = selectedFile.name
+          .split('.')
+          .pop()
+          .toLowerCase();
+
+        const uniqueName =
+          `${crypto.randomUUID()}.${extension}`;
+
+        // Matches the existing Storage policy:
+        // task ID / employee ID / filename
+        const storagePath =
+          `${taskId}/${user.id}/${uniqueName}`;
+
+        const { error: uploadError } =
+          await supabase.storage
+            .from(BUCKET)
+            .upload(storagePath, selectedFile, {
+              contentType: selectedFile.type,
+              upsert: false,
+            });
+
+        if (uploadError) throw uploadError;
+
+        // Record the uploaded file in the existing table.
+        const { error: recordError } = await supabase
+          .from('task_attachments')
+          .insert({
+            task_id: taskId,
+            uploaded_by: user.id,
+            file_name: selectedFile.name,
+            storage_path: storagePath,
+            file_type: selectedFile.type,
+            file_size: selectedFile.size,
+          });
+
+        if (recordError) {
+          // Roll back the uploaded file if recording fails.
+          const { error: cleanupError } =
+            await supabase.storage
+              .from(BUCKET)
+              .remove([storagePath]);
+
+          if (cleanupError) {
+            console.error(
+              'Attachment rollback failed:',
+              cleanupError
+            );
+          }
+
+          throw recordError;
+        }
+      }
+
+      // STEP 2: Submit accomplishment for review.
       const { error: submitError } = await supabase.rpc(
         'submit_work',
         {
@@ -113,8 +224,15 @@ export default function Accomplish() {
       toast('Accomplishment submitted for supervisor review');
       back();
     } catch (submitError) {
-      console.error('Submit accomplishment error:', submitError);
-      alert(submitError.message);
+      console.error(
+        'Submit accomplishment error:',
+        submitError
+      );
+
+      alert(
+        submitError.message ||
+          'Something went wrong while submitting.'
+      );
     } finally {
       setSaving(false);
     }
@@ -125,7 +243,7 @@ export default function Accomplish() {
       <Banner
         back
         title="Submit accomplishment"
-        sub="Share a short summary so your supervisor can evaluate your work."
+        sub="Share a summary and upload supporting proof for supervisor review."
       />
 
       <div className="card" style={{ maxWidth: 640 }}>
@@ -183,11 +301,63 @@ export default function Accomplish() {
 
               <div
                 className="drop"
-                style={{ marginTop: 6, opacity: 0.6 }}
+                style={{
+                  marginTop: 8,
+                  padding: 20,
+                  textAlign: 'center',
+                  opacity: 1,
+                }}
               >
-                <Icon n="up" />
-                <p>File uploads will be available later.</p>
+                <p style={{ marginBottom: 12 }}>
+                  Select a supporting file
+                </p>
+
+                <input
+                  type="file"
+                  accept=".jpg,.jpeg,.png,.pdf"
+                  onChange={handleFileChange}
+                  disabled={saving}
+                  style={{ width: '100%' }}
+                />
+
+                <p
+                  className="muted"
+                  style={{
+                    fontSize: 12,
+                    marginTop: 10,
+                  }}
+                >
+                  Accepted: JPG, PNG, PDF (Max 5 MB)
+                </p>
               </div>
+
+              {selectedFile && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    padding: 12,
+                    borderRadius: 8,
+                    background: 'rgba(0, 150, 100, 0.08)',
+                  }}
+                >
+                  <p style={{ fontSize: 13 }}>
+                    Selected: {selectedFile.name}
+                  </p>
+
+                  <p
+                    className="muted"
+                    style={{ fontSize: 12 }}
+                  >
+                    Size:{' '}
+                    {(
+                      selectedFile.size /
+                      1024 /
+                      1024
+                    ).toFixed(2)}{' '}
+                    MB
+                  </p>
+                </div>
+              )}
             </div>
 
             <Fld label="Date completed">
@@ -197,7 +367,11 @@ export default function Accomplish() {
                 value={new Date().toLocaleDateString('en-CA')}
                 disabled
               />
-              <p className="muted" style={{ fontSize: 12 }}>
+
+              <p
+                className="muted"
+                style={{ fontSize: 12 }}
+              >
                 Submission time is recorded automatically.
               </p>
             </Fld>
@@ -208,7 +382,7 @@ export default function Accomplish() {
               disabled={saving || tasks.length === 0}
             >
               {saving
-                ? 'Submitting...'
+                ? 'Uploading / Submitting...'
                 : 'Submit for review'}
             </button>
           </form>

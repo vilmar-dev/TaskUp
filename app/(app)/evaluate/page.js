@@ -14,6 +14,7 @@ export default function Evaluate() {
   const [error, setError] = useState('');
   const [savingId, setSavingId] = useState(null);
   const [forms, setForms] = useState({});
+  const [openingFile, setOpeningFile] = useState(null);
 
   useEffect(() => {
     let active = true;
@@ -41,7 +42,9 @@ export default function Evaluate() {
       let taskNames = {};
       let employeeNames = {};
       let evaluationMap = {};
+      let attachmentMap = {};
 
+      // LOAD TASK NAMES
       if (taskIds.length > 0) {
         const { data: tasks, error: taskError } = await supabase
           .from('tasks')
@@ -59,6 +62,7 @@ export default function Evaluate() {
         );
       }
 
+      // LOAD EMPLOYEE NAMES
       if (employeeIds.length > 0) {
         const { data: employees, error: employeeError } =
           await supabase
@@ -80,6 +84,7 @@ export default function Evaluate() {
         );
       }
 
+      // LOAD EXISTING EVALUATIONS
       if (records.length > 0) {
         const { data: evaluations, error: evaluationError } =
           await supabase
@@ -104,6 +109,34 @@ export default function Evaluate() {
         );
       }
 
+      // NEW: LOAD SUPPORTING ATTACHMENTS
+      if (taskIds.length > 0) {
+        const { data: attachments, error: attachmentError } =
+          await supabase
+            .from('task_attachments')
+            .select(
+              'id, task_id, uploaded_by, file_name, storage_path, file_type, file_size, created_at'
+            )
+            .in('task_id', taskIds);
+
+        if (attachmentError) {
+          setError(attachmentError.message);
+          setLoading(false);
+          return;
+        }
+
+        for (const attachment of attachments || []) {
+          const key =
+            `${attachment.task_id}:${attachment.uploaded_by}`;
+
+          if (!attachmentMap[key]) {
+            attachmentMap[key] = [];
+          }
+
+          attachmentMap[key].push(attachment);
+        }
+      }
+
       if (!active) return;
 
       setSubmissions(
@@ -112,12 +145,30 @@ export default function Evaluate() {
 
           return {
             ...record,
-            taskName: taskNames[record.task_id] || 'Unknown task',
+
+            taskName:
+              taskNames[record.task_id] || 'Unknown task',
+
             employeeName:
               employeeNames[record.employee_id] || 'Employee',
+
+            attachments: (
+              attachmentMap[
+                `${record.task_id}:${record.employee_id}`
+              ] || []
+            ).filter(
+              (attachment) =>
+                new Date(attachment.created_at) <=
+                new Date(record.submitted_at)
+            ),
+
             evaluated: Boolean(evaluation),
-            approvalStatus: evaluation?.approval_status || null,
-            approvedAt: evaluation?.approved_at || null,
+
+            approvalStatus:
+              evaluation?.approval_status || null,
+
+            approvedAt:
+              evaluation?.approved_at || null,
           };
         })
       );
@@ -133,6 +184,7 @@ export default function Evaluate() {
     };
   }, []);
 
+  // UPDATE EVALUATION FORM
   function updateForm(submissionId, field, value) {
     setForms((previous) => ({
       ...previous,
@@ -145,6 +197,7 @@ export default function Evaluate() {
     }));
   }
 
+  // SAVE EVALUATION
   async function submitEvaluation(submissionId) {
     if (savingId) return;
 
@@ -184,13 +237,18 @@ export default function Evaluate() {
 
       toast('Evaluation saved successfully');
     } catch (evaluationError) {
-      console.error('Evaluate work error:', evaluationError);
+      console.error(
+        'Evaluate work error:',
+        evaluationError
+      );
+
       alert(evaluationError.message);
     } finally {
       setSavingId(null);
     }
   }
 
+  // APPROVE ACCOMPLISHMENT
   async function approveSubmission(submissionId) {
     if (savingId) return;
 
@@ -205,18 +263,35 @@ export default function Evaluate() {
     try {
       const supabase = createClient();
 
+      
+const {
+  data: { user },
+  error: authError,
+} = await supabase.auth.getUser();
+
+if (authError || !user) {
+  alert('No valid Supabase login session found.');
+  return;
+}
+
+alert('Actual logged-in user ID: ' + user.id);
+
+
       const { error: approvalError } = await supabase.rpc(
         'approve_work_submission',
-        { target_submission_id: submissionId }
+        {
+          target_submission_id: submissionId,
+        }
       );
 
       if (approvalError) throw approvalError;
 
-      const { data: evaluation, error: reloadError } = await supabase
-        .from('evaluations')
-        .select('approval_status, approved_at')
-        .eq('submission_id', submissionId)
-        .single();
+      const { data: evaluation, error: reloadError } =
+        await supabase
+          .from('evaluations')
+          .select('approval_status, approved_at')
+          .eq('submission_id', submissionId)
+          .single();
 
       if (reloadError) throw reloadError;
 
@@ -234,10 +309,71 @@ export default function Evaluate() {
 
       toast('Accomplishment approved successfully');
     } catch (approvalError) {
-      console.error('Approve accomplishment error:', approvalError);
+      console.error(
+        'Approve accomplishment error:',
+        approvalError
+      );
+
       alert(approvalError.message);
     } finally {
       setSavingId(null);
+    }
+  }
+
+  // NEW: OPEN ATTACHMENT USING A SIGNED URL
+  async function openAttachment(attachment) {
+    if (openingFile) return;
+
+    setOpeningFile(attachment.id);
+
+    // Open immediately to avoid popup blocking.
+    const fileTab = window.open('', '_blank');
+
+    if (!fileTab) {
+      alert(
+        'Please allow popups for TaskUp and try again.'
+      );
+
+      setOpeningFile(null);
+      return;
+    }
+
+    try {
+      const supabase = createClient();
+
+      const { data, error: signedUrlError } =
+        await supabase.storage
+          .from('task-attachments')
+          .createSignedUrl(
+            attachment.storage_path,
+            60
+          );
+
+      if (signedUrlError) {
+        throw signedUrlError;
+      }
+
+      if (!data?.signedUrl) {
+        throw new Error(
+          'Could not create file link.'
+        );
+      }
+
+      fileTab.location.href = data.signedUrl;
+    } catch (fileError) {
+      fileTab.close();
+
+      console.error(
+        'Open attachment error:',
+        fileError
+      );
+
+      alert(
+        fileError.message ||
+          'Could not open attachment.'
+      );
+    } finally {
+      setOpeningFile(null);
     }
   }
 
@@ -266,11 +402,14 @@ export default function Evaluate() {
         </div>
       ) : error ? (
         <div className="card">
-          <p style={{ color: 'red' }}>{error}</p>
+          <p style={{ color: 'red' }}>
+            {error}
+          </p>
         </div>
       ) : submissions.length === 0 ? (
         <div className="card">
           <h3>No submissions yet</h3>
+
           <p className="muted">
             Employee accomplishments will appear here after submission.
           </p>
@@ -282,9 +421,12 @@ export default function Evaluate() {
             feedback: '',
           };
 
-          const approved = submission.approvalStatus === 'approved';
+          const approved =
+            submission.approvalStatus === 'approved';
+
           const pending =
-            submission.evaluated && submission.approvalStatus === 'pending';
+            submission.evaluated &&
+            submission.approvalStatus === 'pending';
 
           return (
             <div
@@ -301,9 +443,7 @@ export default function Evaluate() {
                   className={
                     approved
                       ? 'chip ok'
-                      : submission.evaluated
-                        ? 'chip pd'
-                        : 'chip pd'
+                      : 'chip pd'
                   }
                 >
                   {approved
@@ -322,8 +462,62 @@ export default function Evaluate() {
               </p>
 
               <h4>Accomplishment</h4>
-              <p className="muted">{submission.accomplishment}</p>
 
+              <p className="muted">
+                {submission.accomplishment}
+              </p>
+
+              {/* NEW: SUPPORTING ATTACHMENTS */}
+              <div
+                style={{
+                  marginTop: 16,
+                  marginBottom: 18,
+                }}
+              >
+                <h4>Supporting attachments</h4>
+
+                {submission.attachments.length === 0 ? (
+                  <p className="muted sm">
+                    No supporting files found.
+                  </p>
+                ) : (
+                  submission.attachments.map(
+                    (attachment) => (
+                      <div
+                        key={attachment.id}
+                        className="row sb wrap"
+                        style={{
+                          gap: 12,
+                          marginBottom: 10,
+                        }}
+                      >
+                        <span
+                          style={{
+                            overflowWrap: 'anywhere',
+                          }}
+                        >
+                          {attachment.file_name}
+                        </span>
+
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={openingFile !== null}
+                          onClick={() =>
+                            openAttachment(attachment)
+                          }
+                        >
+                          {openingFile === attachment.id
+                            ? 'Opening...'
+                            : 'View / Download'}
+                        </button>
+                      </div>
+                    )
+                  )
+                )}
+              </div>
+
+              {/* EVALUATION FORM */}
               {!submission.evaluated && (
                 <>
                   <Fld label="Rating">
@@ -338,11 +532,25 @@ export default function Evaluate() {
                         )
                       }
                     >
-                      <option value={5}>5 - Excellent</option>
-                      <option value={4}>4 - Very good</option>
-                      <option value={3}>3 - Good</option>
-                      <option value={2}>2 - Needs improvement</option>
-                      <option value={1}>1 - Poor</option>
+                      <option value={5}>
+                        5 - Excellent
+                      </option>
+
+                      <option value={4}>
+                        4 - Very good
+                      </option>
+
+                      <option value={3}>
+                        3 - Good
+                      </option>
+
+                      <option value={2}>
+                        2 - Needs improvement
+                      </option>
+
+                      <option value={1}>
+                        1 - Poor
+                      </option>
                     </select>
                   </Fld>
 
@@ -364,7 +572,9 @@ export default function Evaluate() {
                   <button
                     className="btn p"
                     disabled={savingId !== null}
-                    onClick={() => submitEvaluation(submission.id)}
+                    onClick={() =>
+                      submitEvaluation(submission.id)
+                    }
                   >
                     {savingId === submission.id
                       ? 'Saving...'
@@ -373,17 +583,20 @@ export default function Evaluate() {
                 </>
               )}
 
+              {/* PENDING APPROVAL */}
               {pending && (
                 <div style={{ marginTop: 16 }}>
                   <p className="muted sm">
-                    Evaluation saved. Supervisor approval is required
-                    before attachment cleanup.
+                    Evaluation saved. Supervisor approval
+                    is required before attachment cleanup.
                   </p>
 
                   <button
                     className="btn p"
                     disabled={savingId !== null}
-                    onClick={() => approveSubmission(submission.id)}
+                    onClick={() =>
+                      approveSubmission(submission.id)
+                    }
                   >
                     {savingId === submission.id
                       ? 'Approving...'
@@ -392,6 +605,7 @@ export default function Evaluate() {
                 </div>
               )}
 
+              {/* APPROVED SUBMISSION */}
               {approved && (
                 <div style={{ marginTop: 16 }}>
                   <p style={{ color: 'green' }}>
@@ -399,7 +613,8 @@ export default function Evaluate() {
                   </p>
 
                   <p className="muted sm">
-                    Approval time: {formatDate(submission.approvedAt)}
+                    Approval time:{' '}
+                    {formatDate(submission.approvedAt)}
                   </p>
                 </div>
               )}
