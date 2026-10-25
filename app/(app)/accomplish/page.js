@@ -29,6 +29,8 @@ export default function Accomplish() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [rejectedSubmissions, setRejectedSubmissions] = useState({});
+  const [latestSubmissionStatus, setLatestSubmissionStatus] = useState({});
 
   useEffect(() => {
     let active = true;
@@ -74,6 +76,83 @@ export default function Accomplish() {
               ? ''
               : availableTasks[0]?.id || ''
         );
+
+        // Load the employee's submissions, newest first.
+        const { data: employeeSubmissions, error: submissionsError } =
+          await supabase
+            .from('work_submissions')
+            .select('id, task_id, accomplishment, submitted_at')
+            .eq('employee_id', user.id)
+            .order('submitted_at', { ascending: false });
+
+        if (!active) return;
+
+        if (submissionsError) {
+          setError(submissionsError.message);
+          setLoading(false);
+          return;
+        }
+
+        // Keep only the latest submission for each task.
+        const latestByTask = {};
+
+        for (const submission of employeeSubmissions || []) {
+          if (!latestByTask[submission.task_id]) {
+            latestByTask[submission.task_id] = submission;
+          }
+        }
+
+        const latestIds = Object.values(latestByTask).map(
+          (item) => item.id
+        );
+
+        let evaluationMap = {};
+
+        if (latestIds.length > 0) {
+          const { data: evaluations, error: evaluationsError } =
+            await supabase
+              .from('evaluations')
+              .select('submission_id, approval_status, feedback')
+              .in('submission_id', latestIds);
+
+          if (!active) return;
+
+          if (evaluationsError) {
+            setError(evaluationsError.message);
+            setLoading(false);
+            return;
+          }
+
+          evaluationMap = Object.fromEntries(
+            (evaluations || []).map((item) => [
+              item.submission_id,
+              item,
+            ])
+          );
+        }
+
+        const rejectedByTask = {};
+        const statusesByTask = {};
+
+        for (const [id, submission] of Object.entries(latestByTask)) {
+          const evaluation = evaluationMap[submission.id];
+          const status =
+            evaluation?.approval_status || 'awaiting_evaluation';
+
+          statusesByTask[id] = status;
+
+          if (status === 'rejected') {
+            rejectedByTask[id] = {
+              accomplishment: submission.accomplishment,
+              feedback: evaluation?.feedback || '',
+            };
+          }
+        }
+
+        if (!active) return;
+
+        setRejectedSubmissions(rejectedByTask);
+        setLatestSubmissionStatus(statusesByTask);
       }
 
       setLoading(false);
@@ -85,6 +164,14 @@ export default function Accomplish() {
       active = false;
     };
   }, [selectedTaskId]);
+
+  // Load the previous accomplishment when revision is required.
+  useEffect(() => {
+    setAccomplishment(
+      rejectedSubmissions[taskId]?.accomplishment || ''
+    );
+    setSelectedFile(null);
+  }, [taskId, rejectedSubmissions]);
 
   function handleFileChange(e) {
     const file = e.target.files?.[0];
@@ -121,6 +208,15 @@ export default function Accomplish() {
       return;
     }
 
+    const currentStatus = latestSubmissionStatus[taskId];
+
+    if (currentStatus && currentStatus !== 'rejected') {
+      alert(
+        'This task already has a submission awaiting review or approved.'
+      );
+      return;
+    }
+
     if (!accomplishment.trim()) {
       alert('Please enter your accomplishment.');
       return;
@@ -140,7 +236,7 @@ export default function Accomplish() {
         throw new Error('Please log in again.');
       }
 
-      // Verify that the task belongs to this employee.
+      // Verify the task belongs to the logged-in employee.
       const { data: assignedTask, error: taskError } =
         await supabase
           .from('tasks')
@@ -155,7 +251,7 @@ export default function Accomplish() {
         );
       }
 
-      // STEP 1: Upload attachment and save its record.
+      // Preserve existing attachment upload functionality.
       if (selectedFile) {
         const extension = selectedFile.name
           .split('.')
@@ -165,8 +261,6 @@ export default function Accomplish() {
         const uniqueName =
           `${crypto.randomUUID()}.${extension}`;
 
-        // Matches the existing Storage policy:
-        // task ID / employee ID / filename
         const storagePath =
           `${taskId}/${user.id}/${uniqueName}`;
 
@@ -180,7 +274,6 @@ export default function Accomplish() {
 
         if (uploadError) throw uploadError;
 
-        // Record the uploaded file in the existing table.
         const { error: recordError } = await supabase
           .from('task_attachments')
           .insert({
@@ -193,7 +286,6 @@ export default function Accomplish() {
           });
 
         if (recordError) {
-          // Roll back the uploaded file if recording fails.
           const { error: cleanupError } =
             await supabase.storage
               .from(BUCKET)
@@ -210,7 +302,7 @@ export default function Accomplish() {
         }
       }
 
-      // STEP 2: Submit accomplishment for review.
+      // Create a new submission, preserving rejected history.
       const { error: submitError } = await supabase.rpc(
         'submit_work',
         {
@@ -237,6 +329,11 @@ export default function Accomplish() {
       setSaving(false);
     }
   }
+
+  const revision = rejectedSubmissions[taskId];
+  const currentStatus = latestSubmissionStatus[taskId];
+  const submissionBlocked =
+    Boolean(currentStatus) && currentStatus !== 'rejected';
 
   return (
     <>
@@ -273,6 +370,42 @@ export default function Accomplish() {
             {tasks.length === 0 && (
               <p className="muted">
                 No assigned tasks found.
+              </p>
+            )}
+
+            {revision && (
+              <div
+                role="status"
+                style={{
+                  padding: 16,
+                  marginBottom: 18,
+                  border: '1px solid #fecaca',
+                  background: '#fef2f2',
+                  borderRadius: 8,
+                  color: '#7f1d1d',
+                }}
+              >
+                <strong>Revision requested</strong>
+
+                <p style={{ marginTop: 8 }}>
+                  <strong>Supervisor feedback:</strong>{' '}
+                  {revision.feedback || 'No feedback provided.'}
+                </p>
+
+                <p style={{ marginTop: 8 }}>
+                  Your previous accomplishment is loaded below.
+                  Edit it and submit the revised version for review.
+                </p>
+              </div>
+            )}
+
+            {submissionBlocked && (
+              <p className="muted" role="status">
+                This task already has a submission (
+                {currentStatus === 'approved'
+                  ? 'approved'
+                  : 'awaiting supervisor review'}
+                ). You cannot submit another version from this page.
               </p>
             )}
 
@@ -379,11 +512,17 @@ export default function Accomplish() {
             <button
               className="btn p full"
               type="submit"
-              disabled={saving || tasks.length === 0}
+              disabled={
+                saving ||
+                tasks.length === 0 ||
+                submissionBlocked
+              }
             >
               {saving
                 ? 'Uploading / Submitting...'
-                : 'Submit for review'}
+                : revision
+                  ? 'Resubmit revised accomplishment'
+                  : 'Submit for review'}
             </button>
           </form>
         )}

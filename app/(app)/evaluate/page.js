@@ -89,7 +89,7 @@ export default function Evaluate() {
         const { data: evaluations, error: evaluationError } =
           await supabase
             .from('evaluations')
-            .select('submission_id, approval_status, approved_at')
+            .select('submission_id, approval_status, approved_at, feedback')
             .in(
               'submission_id',
               records.map((record) => record.id)
@@ -169,6 +169,8 @@ export default function Evaluate() {
 
             approvedAt:
               evaluation?.approved_at || null,
+              feedback:
+                    evaluation?.feedback || '',
           };
         })
       );
@@ -320,6 +322,71 @@ alert('Actual logged-in user ID: ' + user.id);
     }
   }
 
+
+
+  // REJECT ACCOMPLISHMENT
+async function rejectSubmission(submissionId) {
+  if (savingId) return;
+
+  const feedback = window.prompt(
+    'Enter the reason for rejecting this accomplishment:'
+  );
+
+  // Cancel if the supervisor closes the prompt.
+  if (feedback === null) return;
+
+  if (!feedback.trim()) {
+    alert('Rejection feedback is required.');
+    return;
+  }
+
+  const confirmed = window.confirm(
+    'Reject this accomplishment and send it back for revision?'
+  );
+
+  if (!confirmed) return;
+
+  setSavingId(submissionId);
+
+  try {
+    const supabase = createClient();
+
+    const { error: rejectionError } = await supabase.rpc(
+      'reject_work_submission',
+      {
+        target_submission_id: submissionId,
+        rejection_feedback: feedback.trim(),
+      }
+    );
+
+    if (rejectionError) throw rejectionError;
+
+    setSubmissions((previous) =>
+      previous.map((submission) =>
+        submission.id === submissionId
+          ? {
+              ...submission,
+              approvalStatus: 'rejected',
+              approvedAt: null,
+              feedback: feedback.trim(),
+            }
+          : submission
+      )
+    );
+
+    toast('Accomplishment rejected successfully');
+  } catch (rejectionError) {
+    console.error(
+      'Reject accomplishment error:',
+      rejectionError
+    );
+
+    alert(rejectionError.message);
+  } finally {
+    setSavingId(null);
+  }
+}
+
   // NEW: OPEN ATTACHMENT USING A SIGNED URL
   async function openAttachment(attachment) {
     if (openingFile) return;
@@ -446,13 +513,15 @@ alert('Actual logged-in user ID: ' + user.id);
                       : 'chip pd'
                   }
                 >
-                  {approved
-                    ? 'Approved'
-                    : pending
-                      ? 'Pending approval'
-                      : submission.evaluated
-                        ? 'Evaluated'
-                        : 'Needs review'}
+                 {approved
+                        ? 'Approved'
+                        : pending
+                          ? 'Pending approval'
+                          : submission.approvalStatus === 'rejected'
+                            ? 'Rejected'
+                            : submission.evaluated
+                              ? 'Evaluated'
+                              : 'Needs review'}
                 </span>
               </div>
 
@@ -583,27 +652,84 @@ alert('Actual logged-in user ID: ' + user.id);
                 </>
               )}
 
-              {/* PENDING APPROVAL */}
-              {pending && (
-                <div style={{ marginTop: 16 }}>
-                  <p className="muted sm">
-                    Evaluation saved. Supervisor approval
-                    is required before attachment cleanup.
-                  </p>
+             {/* PENDING APPROVAL OR REJECTION */}
+{pending && (
+  <div style={{ marginTop: 16 }}>
+    <p className="muted sm">
+      Evaluation saved. Choose whether to approve
+      or reject this accomplishment.
+    </p>
 
-                  <button
-                    className="btn p"
-                    disabled={savingId !== null}
-                    onClick={() =>
-                      approveSubmission(submission.id)
-                    }
-                  >
-                    {savingId === submission.id
-                      ? 'Approving...'
-                      : 'Approve Accomplishment'}
-                  </button>
-                </div>
-              )}
+    <div
+      style={{
+        display: 'flex',
+        gap: 12,
+        flexWrap: 'wrap',
+      }}
+    >
+      <button
+        type="button"
+        className="btn p"
+        disabled={savingId !== null}
+        onClick={() =>
+          approveSubmission(submission.id)
+        }
+      >
+        {savingId === submission.id
+          ? 'Processing...'
+          : 'Approve Accomplishment'}
+      </button>
+
+      <button
+        type="button"
+        className="btn"
+        style={{
+          backgroundColor: '#dc2626',
+          color: '#ffffff',
+          borderColor: '#dc2626',
+        }}
+        disabled={savingId !== null}
+        onClick={() =>
+          rejectSubmission(submission.id)
+        }
+      >
+        {savingId === submission.id
+          ? 'Processing...'
+          : 'Reject Accomplishment'}
+      </button>
+    </div>
+  </div>
+)}
+
+
+
+{/* REJECTED SUBMISSION */}
+{submission.approvalStatus === 'rejected' && (
+  <div
+    style={{
+      marginTop: 16,
+      padding: 16,
+      backgroundColor: '#fef2f2',
+      border: '1px solid #fecaca',
+      borderRadius: 8,
+    }}
+  >
+    <p
+      style={{
+        color: '#b91c1c',
+        fontWeight: 600,
+        marginBottom: 8,
+      }}
+    >
+      Accomplishment Rejected
+    </p>
+
+    <p style={{ color: '#7f1d1d' }}>
+      <strong>Reason for rejection:</strong>{' '}
+      {submission.feedback || 'No feedback provided.'}
+    </p>
+  </div>
+)}
 
               {/* APPROVED SUBMISSION */}
               {approved && (
